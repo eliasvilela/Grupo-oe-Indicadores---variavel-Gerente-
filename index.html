@@ -732,6 +732,16 @@ var mes = (function(){ var d=new Date(); return d.getFullYear()+"-"+String(d.get
 var db=null, userCap=null, downloadsCap=null;
 var podeParams=null, podeDados=null;
 var meuId=null;
+/* Preenchidos apenas na cópia publicada fora do Claude (GitHub Pages).
+   No painel do Claude o armazenamento compartilhado já vem do próprio claude.ai. */
+var SUPABASE_URL="https://uxesphxwiipoqvuygclt.supabase.co";
+var SUPABASE_ANON_KEY="sb_publishable_l-csYm87whniUX-srA-ulQ_L11AR4Yu";
+var supaClientPromise=null;
+if(!(window.claude&&window.claude.use) && SUPABASE_URL && SUPABASE_ANON_KEY){
+  supaClientPromise=loadScript("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js")
+    .then(function(){ return window.supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY); })
+    .catch(function(){ return null; });
+}
 var editandoAgora=false;
 var apurSeq=0, apurOk=0, parSeq=0, parOk=0;   // edições pendentes de confirmação
 var carregandoRemoto=false;                  // aguardando a primeira leitura do servidor
@@ -1838,6 +1848,66 @@ function shiftMes(d){
 el("mesPrev").addEventListener("click",function(){ shiftMes(-1); });
 el("mesNext").addEventListener("click",function(){ shiftMes(1); });
 
+/* ═══════════ Armazenamento via Supabase (cópia fora do Claude) ═══════════ */
+/* Implementa a mesma interface .doc()/.collection() usada pelo banco do Claude,
+   para o resto do código não precisar saber de onde vem o dado.
+   Sem tempo real do Supabase (evita a complexidade de RLS em canal realtime):
+   busca ao carregar a página e a cada 8s enquanto ela ficar aberta. */
+var INTERVALO_POLL=8000;
+function montarDbSupabase(){
+  if(!supaClientPromise) return Promise.resolve(null);
+  return supaClientPromise.then(function(sc){
+    if(!sc) return null;
+    function docRef(caminho){
+      var partes=caminho.split("/"), colecao=partes[0], id=partes.slice(1).join("/");
+      var ultimo=null;
+      return {
+        set:function(dados){
+          var linha={collection:colecao,id:id,data:dados,updated_at:new Date().toISOString()};
+          if(meuId) linha.updated_by=meuId;
+          return sc.from("kv_store").upsert(linha,{onConflict:"collection,id"}).then(function(r){
+            if(r.error) throw r.error;
+          });
+        },
+        onSnapshot:function(cb,errCb){
+          function carregar(){
+            sc.from("kv_store").select("data").eq("collection",colecao).eq("id",id).maybeSingle().then(function(r){
+              if(r.error){ if(errCb) errCb(r.error); return; }
+              var atual=r.data?JSON.stringify(r.data.data):null;
+              if(atual===ultimo) return;
+              ultimo=atual;
+              if(!r.data){ cb({exists:false,data:function(){return null;}}); return; }
+              cb({exists:true,data:function(){return r.data.data;}});
+            }).catch(function(e){ if(errCb) errCb(e); });
+          }
+          carregar();
+          setInterval(carregar,INTERVALO_POLL);
+        }
+      };
+    }
+    function collectionRef(nome){
+      var ultimo=null;
+      return {
+        onSnapshot:function(cb,errCb){
+          function carregar(){
+            sc.from("kv_store").select("id,data").eq("collection",nome).then(function(r){
+              if(r.error){ if(errCb) errCb(r.error); return; }
+              var atual=JSON.stringify(r.data||[]);
+              if(atual===ultimo) return;
+              ultimo=atual;
+              var docs=(r.data||[]).map(function(row){ return {id:row.id,data:function(){return row.data;}}; });
+              cb({docs:docs});
+            }).catch(function(e){ if(errCb) errCb(e); });
+          }
+          carregar();
+          setInterval(carregar,INTERVALO_POLL);
+        }
+      };
+    }
+    return {doc:docRef,collection:collectionRef};
+  });
+}
+
 /* ═══════════ Tela de acesso ═══════════ */
 /* Ligada apenas na cópia que roda fora do Claude (GitHub, servidor próprio).
    No painel publicado quem controla o acesso é o compartilhamento do claude.ai. */
@@ -1873,13 +1943,36 @@ function montarPorta(){
     ev.preventDefault();
     var btn=el("portaBtn");
     btn.disabled=true; btn.textContent="Verificando…";
-    conferirAcesso(el("portaUser").value,el("portaPass").value).then(function(ok){
-      btn.disabled=false; btn.textContent="Entrar";
-      if(ok){ el("portaErro").hidden=true; abrirPorta(); }
-      else{
+    var usuario=el("portaUser").value, senha=el("portaPass").value;
+    conferirAcesso(usuario,senha).then(function(ok){
+      if(!ok){
+        btn.disabled=false; btn.textContent="Entrar";
         el("portaErro").hidden=false;
         el("portaPass").value=""; el("portaPass").focus();
+        return;
       }
+      if(!supaClientPromise){                 // Claude, ou GitHub sem Supabase configurado
+        btn.disabled=false; btn.textContent="Entrar";
+        el("portaErro").hidden=true; abrirPorta();
+        return;
+      }
+      /* GitHub com Supabase: autentica de verdade no servidor, não só no navegador */
+      supaClientPromise.then(function(sc){
+        if(!sc) throw new Error("sem cliente supabase");
+        var email=usuario.trim().toLowerCase()+"@grupooe.local";
+        return sc.auth.signInWithPassword({email:email,password:senha});
+      }).then(function(r){
+        if(r&&r.error) throw r.error;
+        el("portaErro").hidden=true; abrirPorta();
+        /* recarrega já autenticado: evita esperar o próximo ciclo de sincronização
+           para ver os dados que já estão salvos no Supabase */
+        location.reload();
+      }).catch(function(){
+        btn.disabled=false; btn.textContent="Entrar";
+        btn.disabled=false; btn.textContent="Entrar";
+        el("portaErro").hidden=false;
+        el("portaPass").value=""; el("portaPass").focus();
+      });
     });
   });
 }
@@ -1935,17 +2028,26 @@ montarPorta();
 setTimeout(function(){ diag("pagina aberta","v17"); },1200);
 
 (async function(){
-  if(!window.claude||!window.claude.use) return;
-  try{ userCap=await window.claude.use("user"); }catch(e){}
-  try{ downloadsCap=await window.claude.use("downloads"); }catch(e){}
-  if(userCap){
-    try{ podeParams=await userCap.canEdit(); }catch(e){}
-    try{ podeDados=await userCap.can("data.write"); }catch(e){}
-    try{ meuId=await userCap.id(); }catch(e){}
-  }
-  renderApurNotice(); renderParamNotice(); renderInd();
+  var temClaude=!!(window.claude&&window.claude.use);
+  if(!temClaude && !supaClientPromise) return;
 
-  try{ db=await window.claude.use("db"); }catch(e){ db=null; }
+  if(temClaude){
+    try{ userCap=await window.claude.use("user"); }catch(e){}
+    try{ downloadsCap=await window.claude.use("downloads"); }catch(e){}
+    if(userCap){
+      try{ podeParams=await userCap.canEdit(); }catch(e){}
+      try{ podeDados=await userCap.can("data.write"); }catch(e){}
+      try{ meuId=await userCap.id(); }catch(e){}
+    }
+    renderApurNotice(); renderParamNotice(); renderInd();
+    try{ db=await window.claude.use("db"); }catch(e){ db=null; }
+  } else {
+    /* GitHub com Supabase configurado: só chega aqui depois de logar no portão
+       (montarPorta já autenticou no Supabase antes de liberar a tela, com reload). */
+    podeParams=true; podeDados=true; meuId="grupooe";
+    try{ db=await montarDbSupabase(); }catch(e){ db=null; }
+    renderApurNotice(); renderParamNotice(); renderInd();
+  }
   if(!db){ renderApurNotice(); conciliaCampos(); return; }
   carregandoRemoto=true; renderApurNotice();
   setTimeout(function(){ if(carregandoRemoto){ carregandoRemoto=false; renderApurNotice(); } },12000);
