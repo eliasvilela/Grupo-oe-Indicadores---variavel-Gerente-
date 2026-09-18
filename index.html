@@ -620,6 +620,7 @@ body.trancado > header, body.trancado > nav, body.trancado > main{display:none}
           <p class="sub">Valem para todos os meses em aberto</p>
         </div>
         <div class="spacer"></div>
+        <button class="btn primary" type="button" id="btnSalvarParam">Salvar alterações</button>
         <span class="savechip" id="saveParam"></span>
       </div>
       <div class="card-bd">
@@ -901,7 +902,7 @@ function chip(id,txt,ms){
   var n=el(id); if(!n) return; n.textContent=txt;
   if(ms) setTimeout(function(){ if(n.textContent===txt) n.textContent=""; },ms);
 }
-var salvarParams=debounce(function(){
+function gravarParamsAgora(){
   localSave();
   if(!db){ chip("saveParam","Salvo neste aparelho",2500); return; }
   chip("saveParam","Salvando…");
@@ -915,7 +916,8 @@ var salvarParams=debounce(function(){
     if(e&&e.code==="invalid_argument"){ podeParams=false; renderParamNotice(); renderParams(); chip("saveParam","Sem permissão de edição"); }
     else chip("saveParam","Falha ao salvar",4000);
   });
-},700);
+}
+var salvarParams=debounce(gravarParamsAgora,700);
 
 var salvarApur=debounce(function(){
   localSave();
@@ -1406,7 +1408,7 @@ function renderParams(){
   el("pTeto").value=num(PARAMS.teto).toLocaleString("pt-BR",{maximumFractionDigits:2});
   el("pUnid").value=unidadesDe().join(", ");
   ["pCargo","pTeto","pUnid"].forEach(function(id){ el(id).disabled=ro; });
-  el("btnAddInd").disabled=ro; el("btnReset").disabled=ro;
+  el("btnAddInd").disabled=ro; el("btnReset").disabled=ro; el("btnSalvarParam").disabled=ro;
 
   var us=unidadesDe(), h="", grpAtual=null;
   PARAMS.indicadores.forEach(function(ind,idx){
@@ -1520,6 +1522,7 @@ el("pUnid").addEventListener("input",function(){
   parSeq++; salvarParams();
 });
 el("pUnid").addEventListener("blur",function(){ renderParams(); renderInd(); });
+el("btnSalvarParam").addEventListener("click",function(){ gravarParamsAgora(); });
 
 el("btnAddInd").addEventListener("click",function(){
   var id="ind_"+Date.now().toString(36);
